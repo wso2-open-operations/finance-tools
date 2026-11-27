@@ -64,6 +64,7 @@ func (s *dashboardService) JobCostSummary(ctx context.Context, p domain.Perms, j
 	set := s.buildCostSet(ctx, res)
 	lines, asOf := set.lines, set.asOf
 	out.Incomplete = set.truncated || len(set.failed) > 0
+	out.RatesPending = set.ratesPending
 	for _, f := range set.failed {
 		if visible[f] && !contains(out.FailedSources, f) {
 			out.FailedSources = append(out.FailedSources, f)

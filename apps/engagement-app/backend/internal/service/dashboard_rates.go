@@ -34,7 +34,11 @@ const (
 	dashboardRateCurrentTTL = time.Hour
 	dashboardRateFailedTTL  = 2 * time.Minute
 	dashboardRateBudget     = 8 * time.Second
-	dashboardRateParallel   = 4
+	dashboardRateParallel   = 8
+	// A lookup runs past the request budget: at most this long for the call,
+	// and at most this long waiting for a free slot.
+	dashboardRateLookupTimeout = 30 * time.Second
+	dashboardRateQueueTimeout  = 3 * time.Minute
 )
 
 // Where a USD amount came from.
@@ -76,6 +80,8 @@ type dashboardRates struct {
 	failed   *cache.Cache[string, struct{}]
 	mu       sync.Mutex
 	inflight map[string]chan struct{}
+	queued   map[string]chan struct{} // background lookups, closed when each ends
+	sem      chan struct{}            // bounds lookups running at once
 }
 
 // newDashboardRates returns the rate cache over conv, which may be nil (then
@@ -90,6 +96,8 @@ func newDashboardRates(conv FinanceCurrencyConverter, now func() time.Time) *das
 		current:  cache.New[string, float64](dashboardRateCurrentTTL),
 		failed:   cache.New[string, struct{}](dashboardRateFailedTTL),
 		inflight: map[string]chan struct{}{},
+		queued:   map[string]chan struct{}{},
+		sem:      make(chan struct{}, dashboardRateParallel),
 	}
 }
 
@@ -103,14 +111,17 @@ func (r *dashboardRates) cacheFor(p ratePair) *cache.Cache[string, float64] {
 	return r.past
 }
 
-// resolve returns the USD rate of every pair it can. Missing pairs are
-// fetched, at most four at a time, within one 8 second budget; pairs that
-// fail, or are not answered in time, are absent. Blank and USD currencies are
+// resolve returns the USD rate of every pair it can, and whether any pair is
+// still being looked up (pending). Missing pairs are fetched in the
+// background, at most dashboardRateParallel at a time across the process.
+// resolve waits for them only for the budget; a lookup that finishes later
+// still fills the cache, so the next call has it. Pairs the service failed or
+// has no rate for are absent but not pending. Blank and USD currencies are
 // skipped. Without a converter the result is empty.
-func (r *dashboardRates) resolve(ctx context.Context, pairs []ratePair) rateSet {
+func (r *dashboardRates) resolve(ctx context.Context, pairs []ratePair) (rateSet, bool) {
 	out := rateSet{}
 	if r == nil || r.conv == nil {
-		return out
+		return out, false
 	}
 	var todo []ratePair
 	seen := map[ratePair]bool{}
@@ -131,46 +142,89 @@ func (r *dashboardRates) resolve(ctx context.Context, pairs []ratePair) rateSet 
 		todo = append(todo, p)
 	}
 	if len(todo) == 0 {
-		return out
+		return out, false
 	}
 
 	start := time.Now()
+	waits := make([]chan struct{}, len(todo))
+	for i, p := range todo {
+		waits[i] = r.start(ctx, p)
+	}
 	bctx, cancel := context.WithTimeout(ctx, r.budget)
 	defer cancel()
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, dashboardRateParallel)
+wait:
+	for _, ch := range waits {
+		select {
+		case <-ch:
+		case <-bctx.Done():
+			break wait
+		}
+	}
+
+	pending := false
 	for _, p := range todo {
-		wg.Add(1)
-		go func(p ratePair) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-bctx.Done():
-				return
-			}
-			if v, ok := r.fetch(bctx, p); ok {
-				mu.Lock()
+		if v, ok := r.cacheFor(p).Get(r.key(p)); ok {
+			if v > 0 {
 				out[p] = v
-				mu.Unlock()
 			}
-		}(p)
+		} else if _, bad := r.failed.Get(r.key(p)); !bad {
+			pending = true
+		}
 	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-bctx.Done():
+	slog.InfoContext(ctx, "dashboard rates resolved", "requested", len(todo), "resolved", len(out), "pending", pending, "duration", time.Since(start).String())
+	return out, pending
+}
+
+// isPending is whether p has neither an answer nor a failure yet, so a lookup is still running.
+func (r *dashboardRates) isPending(p ratePair) bool {
+	if r == nil || r.conv == nil || p.Currency == "" || p.Currency == "USD" {
+		return false
 	}
-	mu.Lock()
-	res := make(rateSet, len(out))
-	for k, v := range out {
-		res[k] = v
+	if _, ok := r.cacheFor(p).Get(r.key(p)); ok {
+		return false
 	}
-	mu.Unlock()
-	slog.InfoContext(ctx, "dashboard rates resolved", "requested", len(todo), "resolved", len(res), "duration", time.Since(start).String())
-	return res
+	_, bad := r.failed.Get(r.key(p))
+	return !bad
+}
+
+// start makes sure p is being looked up and returns a channel that closes when
+// that lookup ends. A lookup already running for p is joined. The lookup is
+// detached from ctx, so it outlives the request that asked and still fills the
+// cache; it is bounded by dashboardRateQueueTimeout (waiting for a slot) and
+// dashboardRateLookupTimeout (the call itself).
+func (r *dashboardRates) start(ctx context.Context, p ratePair) chan struct{} {
+	k := r.key(p)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ch, ok := r.queued[k]; ok {
+		return ch
+	}
+	ch := make(chan struct{})
+	r.queued[k] = ch
+	lctx := context.WithoutCancel(ctx)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.ErrorContext(lctx, "dashboard rate lookup panicked", "currency", p.Currency, "date", p.Date, "panic", rec)
+			}
+			r.mu.Lock()
+			delete(r.queued, k)
+			r.mu.Unlock()
+			close(ch)
+		}()
+		qctx, qcancel := context.WithTimeout(lctx, dashboardRateQueueTimeout)
+		defer qcancel()
+		select {
+		case r.sem <- struct{}{}:
+			defer func() { <-r.sem }()
+		case <-qctx.Done():
+			return
+		}
+		fctx, fcancel := context.WithTimeout(lctx, dashboardRateLookupTimeout)
+		defer fcancel()
+		r.fetch(fctx, p)
+	}()
+	return ch
 }
 
 // fetch gets one rate, sharing the call with any other request that asks for

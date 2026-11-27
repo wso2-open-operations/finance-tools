@@ -880,6 +880,9 @@ func TestCostPrepared_CurrentPeriodFailureBlocksTheComparison(t *testing.T) {
 	if (&costPrepared{allowed: allowed, selected: allowed, set: cur, prevSet: prev}).comparable() {
 		t.Fatal("a card set missing now would show last year's cards as a drop")
 	}
+	if (&costPrepared{allowed: allowed, selected: allowed, set: &costSet{}, prevSet: &costSet{ratesPending: true}}).comparable() {
+		t.Error("a previous period with rates pending is not comparable")
+	}
 	if !(&costPrepared{allowed: allowed, selected: []string{"invoice"}, set: cur, prevSet: prev}).comparable() {
 		t.Fatal("a card failure must not block an invoice-only comparison")
 	}

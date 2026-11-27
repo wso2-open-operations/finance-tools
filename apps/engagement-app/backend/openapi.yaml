@@ -3467,6 +3467,7 @@ components:
         hasUnconvertedHidden: { type: boolean, description: 'An amount in a source the caller may not view could not be converted. No detail is given.' }
         incomplete: { type: boolean, description: 'Any source could not be read or the line cap was reached, so the total may be too low.' }
         failedSources: { type: array, description: 'Only sources the caller may view are named.', items: { type: string, enum: [invoice, perDiem, card, claim] } }
+        ratesPending: { type: boolean, description: 'Optional, present only when true. Exchange rates were still loading, so some amounts are unconverted for now; reload shortly.' }
         dataAsOf: { type: string, format: date-time }
     TravelCostSummary:
       type: object
@@ -3503,6 +3504,7 @@ components:
         notConverted: { type: array, description: 'Left out of every USD figure; counted in trips and travellers.', items: { $ref: '#/components/schemas/CostNotConverted' } }
         failedSources: { type: array, description: 'Sources that could not be read (for example card and claim when expense_app is down); totals leave them out.', items: { $ref: '#/components/schemas/CostSource' } }
         truncated: { type: boolean, description: 'A source hit the 20,000-line cap.' }
+        ratesPending: { type: boolean, description: 'Optional, present only when true. Some amounts in notConverted are unconverted only because exchange rates are still loading; reload shortly (the result is cached for a minute at most).' }
         comparisonFailedSources: { type: array, description: 'Sources that could not be read for the comparison period. When any is listed, or comparisonTruncated is true, last year is incomplete and no change against it is given (previous and changePercent are null).', items: { $ref: '#/components/schemas/CostSource' } }
         comparisonTruncated: { type: boolean, description: 'The comparison period hit the 20,000-line cap.' }
         facets:

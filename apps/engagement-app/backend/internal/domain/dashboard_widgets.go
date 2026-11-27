@@ -256,6 +256,9 @@ type TravelCostSummary struct {
 	NotConverted     []CostNotConverted     `json:"notConverted"`
 	FailedSources    []string               `json:"failedSources"`
 	Truncated        bool                   `json:"truncated"`
+	// RatesPending is true when some amounts in NotConverted are unconverted
+	// only because exchange rates are still loading; reload shortly.
+	RatesPending bool `json:"ratesPending,omitempty"`
 	// ComparisonFailedSources are the sources that could not be read for the
 	// comparison period. When any is listed, or the comparison period was cut
 	// at the line cap, no change against last year is given, because last
@@ -340,5 +343,8 @@ type JobCostSummary struct {
 	// reached, so the total may be too low.
 	Incomplete    bool     `json:"incomplete"`
 	FailedSources []string `json:"failedSources"`
-	DataAsOf      string   `json:"dataAsOf"`
+	// RatesPending is true when exchange rates are still loading, so some
+	// amounts are unconverted for now.
+	RatesPending bool   `json:"ratesPending,omitempty"`
+	DataAsOf     string `json:"dataAsOf"`
 }

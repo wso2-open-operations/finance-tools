@@ -42,8 +42,8 @@ const (
 	// dashboardAggCacheSize bounds the entity aggregates (small, a few KB each).
 	dashboardAggCacheSize = 256
 	dashboardAggMaxLoads  = 8
-	// cacheIncompleteTTL is how long a result that is partial (a failed source
-	// or truncated lines) is kept: briefly, so the gap is retried soon.
+	// cacheIncompleteTTL is how long a result that is partial (a failed source,
+	// truncated lines or exchange rates still loading) is kept: briefly, so the gap is retried soon.
 	cacheIncompleteTTL = time.Minute
 )
 
@@ -90,7 +90,7 @@ func newCostSetCache(size int, ttl time.Duration, now func() time.Time) *costSet
 	c.maxWeight = costSetMaxLines
 	c.weight = func(s *costSet) int { return len(s.lines) }
 	c.ttlFor = func(s *costSet) time.Duration {
-		if s.truncated || len(s.failed) > 0 {
+		if s.truncated || len(s.failed) > 0 || s.ratesPending {
 			return min(ttl, cacheIncompleteTTL)
 		}
 		return ttl

@@ -746,7 +746,7 @@ func dashboardTravelCost(ctx context.Context, t *engagemententity.DashboardTrave
 			pairs = append(pairs, ratePair{strings.ToUpper(strings.TrimSpace(l.Currency)), dashboardRateDate(l.Month, today)})
 		}
 	}
-	rs := rates.resolve(ctx, pairs)
+	rs, _ := rates.resolve(ctx, pairs)
 	series := map[string]map[string]float64{}
 	byType := map[string]float64{}
 	type key struct{ source, currency string }

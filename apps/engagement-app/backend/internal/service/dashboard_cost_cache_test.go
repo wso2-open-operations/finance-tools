@@ -181,3 +181,31 @@ func TestLoadCache_ClearStopsLaterGetsJoiningOlderLoads(t *testing.T) {
 		t.Fatalf("cached value = %q, want %q (older load must not be kept)", got, "after")
 	}
 }
+
+func TestCostSetCache_RatesPendingSetIsKeptBriefly(t *testing.T) {
+	clock := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	c := newCostSetCache(4, time.Hour, func() time.Time { return clock })
+	ctx := context.Background()
+	loads := 0
+	load := func(set *costSet) func() (*costSet, error) {
+		return func() (*costSet, error) { loads++; return set, nil }
+	}
+	_, _ = c.get(ctx, "pending", load(&costSet{ratesPending: true}))
+	clock = clock.Add(30 * time.Second)
+	_, _ = c.get(ctx, "pending", load(&costSet{}))
+	if loads != 1 {
+		t.Fatalf("loads = %d, want 1 (still kept after 30s)", loads)
+	}
+	clock = clock.Add(2 * time.Minute)
+	_, _ = c.get(ctx, "pending", load(&costSet{}))
+	if loads != 2 {
+		t.Errorf("loads = %d, want 2 (reloaded after the incomplete TTL)", loads)
+	}
+}
+
+func TestCostPrepared_IncompleteTextNamesPendingRates(t *testing.T) {
+	c := &costPrepared{set: &costSet{ratesPending: true}}
+	if got := c.incompleteText(); got != "Exchange rates still loading" {
+		t.Errorf("incompleteText = %q", got)
+	}
+}
